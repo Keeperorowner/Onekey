@@ -7,9 +7,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
+	"onekey/internal/constants"
 	"onekey/internal/httpclient"
 	"onekey/internal/i18n"
 	"onekey/internal/models"
@@ -89,6 +91,13 @@ func (h *Handler) ProcessManifests(manifests []models.ManifestInfo, onProgress P
 			processed = append(processed, results[i])
 		}
 	}
+
+	// Persist depot decryption keys to depotcache/config.vdf so Steam can
+	// decrypt depot content even after a restart where SteamTools hasn't
+	// loaded the Lua yet. This matches the legacy Python versions which
+	// wrote DecryptionKey entries alongside the .manifest files.
+	h.writeDepotKeysConfig(processed)
+
 	return processed, nil
 }
 
@@ -122,6 +131,14 @@ func (h *Handler) processSingle(info models.ManifestInfo) bool {
 }
 
 func (h *Handler) download(info models.ManifestInfo) []byte {
+	// GitHub-sourced manifests (URL shape "/{repo}/{sha}/{path}") use the
+	// GitHub CDN templates instead of the Steam CDN list.
+	if isGitHubPath(info.URL) {
+		if data := downloadFromGitHubCDN(info.URL); data != nil {
+			return data
+		}
+		return nil
+	}
 	for retry := 0; retry < 3; retry++ {
 		h.cdnMu.Lock()
 		cdns := make([]string, len(h.cdnList))
@@ -145,6 +162,43 @@ func (h *Handler) download(info models.ManifestInfo) []byte {
 				resp.Body.Close()
 				h.demoteCDN(i)
 			}
+		}
+	}
+	return nil
+}
+
+// isGitHubPath reports whether a URL is a GitHub manifest-repo path of the
+// form "/{owner}/{repo}/{sha}/{path}" produced by FetchAppManifests.
+func isGitHubPath(u string) bool {
+	return strings.HasPrefix(u, "/")
+}
+
+// downloadFromGitHubCDN fetches a GitHub raw file by trying every GitHub CDN
+// template against the path-style URL.
+func downloadFromGitHubCDN(pathURL string) []byte {
+	parts := strings.SplitN(strings.TrimPrefix(pathURL, "/"), "/", 4)
+	if len(parts) < 4 {
+		return nil
+	}
+	repo := parts[0] + "/" + parts[1]
+	sha := parts[2]
+	path := parts[3]
+	for _, tmpl := range constants.GitHubCDNTemplates {
+		url := strings.ReplaceAll(tmpl, "{repo}", repo)
+		url = strings.ReplaceAll(url, "{sha}", sha)
+		url = strings.ReplaceAll(url, "{path}", path)
+		resp, err := client.Get(url)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode == 200 {
+			data, rerr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if rerr == nil {
+				return data
+			}
+		} else {
+			resp.Body.Close()
 		}
 	}
 	return nil
@@ -198,4 +252,99 @@ func extractManifestPayload(content []byte) []byte {
 		}
 	}
 	return content
+}
+
+// writeDepotKeysConfig merges depot decryption keys into
+// <steamPath>/depotcache/config.vdf. Steam reads this file at startup to
+// know how to decrypt depot content, so keys survive Steam restarts even
+// if SteamTools hasn't injected the Lua yet. Existing keys for other depots
+// are preserved; keys for the same depot are overwritten.
+func (h *Handler) writeDepotKeysConfig(processed []models.ManifestInfo) {
+	// Collect unique depot_id → key from processed manifests.
+	keys := map[string]string{}
+	for _, m := range processed {
+		if m.DepotKey != "" && m.DepotKey != "None" {
+			keys[m.DepotID] = m.DepotKey
+		}
+	}
+	if len(keys) == 0 {
+		return
+	}
+
+	configPath := filepath.Join(h.depotCache, "config.vdf")
+
+	// Read existing config.vdf if present and parse existing depot keys.
+	existingKeys := map[string]string{}
+	if data, err := os.ReadFile(configPath); err == nil {
+		existingKeys = parseDepotKeysFromConfigVDF(string(data))
+	}
+
+	// Merge: new keys overwrite existing ones for the same depot.
+	for k, v := range keys {
+		existingKeys[k] = v
+	}
+
+	// Write back as a simple VDF document.
+	writeDepotKeysConfigVDF(configPath, existingKeys)
+}
+
+// parseDepotKeysFromConfigVDF extracts depot_id → DecryptionKey from a
+// config.vdf blob using a minimal VDF token scan.
+func parseDepotKeysFromConfigVDF(content string) map[string]string {
+	keys := map[string]string{}
+	tokens := tokenizeVDF(content)
+	i := 0
+	for i < len(tokens) {
+		if tokens[i] == "depots" && i+1 < len(tokens) && tokens[i+1] == "{" {
+			i += 2
+			for i < len(tokens) && tokens[i] != "}" {
+				depotID := tokens[i]
+				if i+1 < len(tokens) && tokens[i+1] == "{" {
+					i += 2
+					for i < len(tokens) && tokens[i] != "}" {
+						if tokens[i] == "DecryptionKey" && i+1 < len(tokens) {
+							keys[depotID] = tokens[i+1]
+							i += 2
+							continue
+						}
+						i++
+					}
+					if i < len(tokens) && tokens[i] == "}" {
+						i++
+					}
+					continue
+				}
+				i++
+			}
+			if i < len(tokens) && tokens[i] == "}" {
+				i++
+			}
+			continue
+		}
+		i++
+	}
+	return keys
+}
+
+// writeDepotKeysConfigVDF writes depot keys as a config.vdf-format file.
+func writeDepotKeysConfigVDF(path string, keys map[string]string) {
+	var b strings.Builder
+	b.WriteString("\"depots\"\n")
+	b.WriteString("{\n")
+	// Sort by numeric depot id for stable output.
+	ids := make([]string, 0, len(keys))
+	for id := range keys {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		return atoiSafe(ids[i]) < atoiSafe(ids[j])
+	})
+	for _, id := range ids {
+		b.WriteString(fmt.Sprintf("\t\"%s\"\n", id))
+		b.WriteString("\t{\n")
+		b.WriteString(fmt.Sprintf("\t\t\"DecryptionKey\"\t\"%s\"\n", keys[id]))
+		b.WriteString("\t}\n")
+	}
+	b.WriteString("}\n")
+	os.WriteFile(path, []byte(b.String()), 0644)
 }

@@ -14,6 +14,11 @@ export default {
     'sidebar.restart_confirm': '确定要重启Steam吗？这将关闭正在运行的Steam进程。',
     'sidebar.light_mode': '浅色模式',
     'sidebar.dark_mode': '深色模式',
+    'sidebar.task_log': '任务日志',
+    'sidebar.log_idle': '空闲',
+    'sidebar.log_completed': '已完成',
+    'sidebar.log_error': '出错',
+    'sidebar.log_clear': '清空',
     // 通用
     'common.confirm': '确认',
     'common.cancel': '取消',
@@ -132,6 +137,10 @@ export default {
     'settings.proxy_url_placeholder': '例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080',
     'settings.proxy_test': '测试连通性',
     'settings.proxy_helper': '如果你在中国大陆且无法搜索/下载，可配置代理来改善连通性。留空则不使用代理。',
+    'settings.github_token': 'GitHub Token',
+    'settings.github_token_label': 'GitHub 个人访问令牌',
+    'settings.github_token_placeholder': 'ghp_xxxxxxxxxxxx (可选，用于提升 API 限额)',
+    'settings.github_token_helper': '未认证 GitHub API 每小时仅 60 次请求，解锁频繁时会触发限速。生成一个 Token (https://github.com/settings/tokens/new) 填入此处，限额提升至 5000 次/小时。无需勾选任何权限，仅用于认证。',
     // Key types
     'key_type.day': '日卡',
     'key_type.week': '周卡',

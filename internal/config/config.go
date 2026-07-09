@@ -145,6 +145,9 @@ func (m *Manager) load() {
 	if v, ok := found["Proxy_URL"]; ok {
 		m.AppConfig.ProxyURL = v
 	}
+	if v, ok := found["GitHub_Token"]; ok {
+		m.AppConfig.GitHubToken = v
+	}
 
 	// Auto-complete: ensure all default keys exist in DB
 	m.autoComplete(found)
@@ -227,6 +230,7 @@ func (m *Manager) configMap(cfg models.AppConfig) map[string]string {
 		"Custom_Steam_Path": cfg.CustomSteamPath,
 		"Language":          cfg.Language,
 		"Proxy_URL":         cfg.ProxyURL,
+		"GitHub_Token":      cfg.GitHubToken,
 	}
 }
 
@@ -244,6 +248,7 @@ func (m *Manager) Update(req models.UpdateConfigRequest) error {
 	m.AppConfig.LoggingFiles = req.LoggingFiles
 	m.AppConfig.ShowConsole = req.ShowConsole
 	m.AppConfig.ProxyURL = req.ProxyURL
+	m.AppConfig.GitHubToken = req.GitHubToken
 	if req.Language != "" {
 		m.AppConfig.Language = req.Language
 	}

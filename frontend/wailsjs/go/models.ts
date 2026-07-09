@@ -109,6 +109,7 @@ export namespace models {
 	    key: string;
 	    language: string;
 	    proxy_url: string;
+	    github_token: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new DetailedConfig(source);
@@ -124,6 +125,7 @@ export namespace models {
 	        this.key = source["key"];
 	        this.language = source["language"];
 	        this.proxy_url = source["proxy_url"];
+	        this.github_token = source["github_token"];
 	    }
 	}
 	export class DetailedConfigResponse {
@@ -512,6 +514,7 @@ export namespace models {
 	    show_console: boolean;
 	    language: string;
 	    proxy_url: string;
+	    github_token: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new UpdateConfigRequest(source);
@@ -526,6 +529,7 @@ export namespace models {
 	        this.show_console = source["show_console"];
 	        this.language = source["language"];
 	        this.proxy_url = source["proxy_url"];
+	        this.github_token = source["github_token"];
 	    }
 	}
 	export class UpdateInfo {

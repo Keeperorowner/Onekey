@@ -105,6 +105,23 @@
         </n-space>
       </n-card>
 
+      <!-- GitHub Token -->
+      <n-card :title="t('settings.github_token')">
+        <n-space :size="12" vertical>
+          <n-form-item :label="t('settings.github_token_label')">
+            <n-input-group>
+              <n-input
+                  v-model:value="githubToken"
+                  :placeholder="t('settings.github_token_placeholder')"
+                  style="flex: 1"
+              />
+              <n-button type="primary" @click="saveGitHubToken">{{ t('settings.save') }}</n-button>
+            </n-input-group>
+          </n-form-item>
+          <n-text depth="3" style="font-size: 12px;">{{ t('settings.github_token_helper') }}</n-text>
+        </n-space>
+      </n-card>
+
       <!-- About Section -->
       <n-card :title="t('settings.about')">
         <n-space :size="8" vertical>
@@ -114,36 +131,6 @@
           <n-text depth="3">{{ t('about.tech_backend') }}: {{ t('about.tech_backend_val') }}</n-text>
           <n-text depth="3">{{ t('about.tech_frontend') }}: Vue 3 / TypeScript / Vite / Naive UI</n-text>
           <n-text depth="3">{{ t('about.tech_tools') }}: {{ t('about.tech_tools_val') }}</n-text>
-          <n-divider style="margin: 8px 0"/>
-          <n-space :size="12" align="center">
-            <n-button :loading="updateChecking" size="small" @click="checkForUpdate">
-              {{ t('update.check') }}
-            </n-button>
-            <n-text v-if="updateInfo && updateInfo.has_update" type="warning">
-              {{ t('update.new_version', {version: updateInfo.latest_version}) }}
-            </n-text>
-            <n-text v-else-if="updateChecked" depth="3">{{ t('update.up_to_date') }}</n-text>
-          </n-space>
-          <template v-if="updateInfo && updateInfo.has_update">
-            <n-alert :title="t('update.title')" style="margin-top: 8px;" type="warning">
-              <n-space :size="4" vertical>
-                <n-text>{{ t('update.current') }}: v{{ updateInfo.current_version }}</n-text>
-                <n-text>{{ t('update.latest') }}: v{{ updateInfo.latest_version }}</n-text>
-                <n-text v-if="updateInfo.changelog">{{ t('update.changelog') }}: {{ updateInfo.changelog }}</n-text>
-                <n-button
-                    v-if="updateInfo.download_url"
-                    :href="updateInfo.download_url"
-                    size="small"
-                    style="margin-top: 4px;"
-                    tag="a"
-                    target="_blank"
-                    type="primary"
-                >
-                  {{ t('update.download') }}
-                </n-button>
-              </n-space>
-            </n-alert>
-          </template>
           <n-divider style="margin: 8px 0"/>
           <n-text depth="3">{{ t('about.copyright') }}</n-text>
         </n-space>
@@ -156,7 +143,7 @@
 import {onMounted, ref, watch} from 'vue'
 import {useMessage} from 'naive-ui'
 import {useI18n} from '../i18n'
-import {CheckUpdate, GetConfig, GetDetailedConfig, TestProxy, UpdateConfig, VerifyKey} from '../../wailsjs/go/main/App'
+import {GetConfig, GetDetailedConfig, TestProxy, UpdateConfig, VerifyKey} from '../../wailsjs/go/main/App'
 
 const {t, setLanguage: setI18nLang} = useI18n()
 const message = useMessage()
@@ -168,11 +155,9 @@ const newKey = ref('')
 const newKeyVerified = ref(false)
 const steamPath = ref('')
 const language = ref('zh')
-const updateInfo = ref<any>(null)
-const updateChecking = ref(false)
-const updateChecked = ref(false)
 const proxyURL = ref('')
 const proxyTesting = ref(false)
+const githubToken = ref('')
 
 onMounted(async () => {
   try {
@@ -182,6 +167,7 @@ onMounted(async () => {
       steamPath.value = resp.config.steam_path || ''
       language.value = resp.config.language || 'zh'
       proxyURL.value = resp.config.proxy_url || ''
+      githubToken.value = resp.config.github_token || ''
       // Fetch key details
       if (resp.config.key) {
         try {
@@ -209,29 +195,11 @@ watch(language, async (val) => {
       show_console: false,
       language: val,
       proxy_url: proxyURL.value,
+      github_token: githubToken.value,
     })
   } catch (e) {
   }
 })
-
-async function checkForUpdate() {
-  updateChecking.value = true
-  updateChecked.value = false
-  try {
-    const info = await CheckUpdate()
-    updateInfo.value = info
-    updateChecked.value = true
-    if (info.has_update) {
-      message.info(t('update.new_version', {version: info.latest_version}))
-    } else {
-      message.success(t('update.up_to_date'))
-    }
-  } catch (e) {
-    message.error(t('update.check_failed'))
-  } finally {
-    updateChecking.value = false
-  }
-}
 
 async function verifyNewKey() {
   const key = newKey.value.trim()
@@ -260,6 +228,7 @@ async function saveNewKey() {
       show_console: false,
       language: language.value,
       proxy_url: proxyURL.value,
+      github_token: githubToken.value,
     })
     if (result.success) {
       message.success(result.message)
@@ -325,6 +294,30 @@ async function saveProxy() {
       show_console: false,
       language: language.value,
       proxy_url: proxyURL.value,
+      github_token: githubToken.value,
+    })
+    if (result.success) {
+      message.success(result.message)
+    } else {
+      message.error(result.message)
+    }
+  } catch (e: any) {
+    message.error(e.message || 'Error')
+  }
+}
+
+async function saveGitHubToken() {
+  if (!detailedConfig.value) return
+  try {
+    const result = await UpdateConfig({
+      key: detailedConfig.value.key || '',
+      steam_path: steamPath.value,
+      debug_mode: false,
+      logging_files: false,
+      show_console: false,
+      language: language.value,
+      proxy_url: proxyURL.value,
+      github_token: githubToken.value,
     })
     if (result.success) {
       message.success(result.message)

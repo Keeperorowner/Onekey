@@ -190,6 +190,7 @@ async function finishSetup() {
       show_console: false,
       language: 'zh',
       proxy_url: '',
+      github_token: '',
     })
     if (result.success) {
       message.success(t('oobe.config_saved'))

@@ -9,6 +9,7 @@ type AppConfig struct {
 	CustomSteamPath string `json:"Custom_Steam_Path"`
 	Language        string `json:"Language"`
 	ProxyURL        string `json:"Proxy_URL"`
+	GitHubToken     string `json:"GitHub_Token"`
 }
 
 // ManifestInfo holds information about a single manifest from the API.
@@ -82,6 +83,7 @@ type DetailedConfig struct {
 	Key             string `json:"key"`
 	Language        string `json:"language"`
 	ProxyURL        string `json:"proxy_url"`
+	GitHubToken     string `json:"github_token"`
 }
 
 type DetailedConfigResponse struct {
@@ -97,6 +99,7 @@ type UpdateConfigRequest struct {
 	ShowConsole  bool   `json:"show_console"`
 	Language     string `json:"language"`
 	ProxyURL     string `json:"proxy_url"`
+	GitHubToken  string `json:"github_token"`
 }
 
 type KeyInfoAPIResponse struct {

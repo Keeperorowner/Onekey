@@ -44,35 +44,11 @@
                 </div>
                 <div class="sider-actions">
                   <n-divider style="margin: 8px 0"/>
-                  <n-button block quaternary size="small" @click="showAnnouncementModal">
+                  <n-button block quaternary size="small" @click="showLogDrawer = true">
                     <template #icon>
-                      <n-icon :component="MegaphoneOutline"/>
+                      <n-icon :component="DocumentTextOutline"/>
                     </template>
-                    <span v-if="!collapsed">{{ t('sidebar.announcements') }}</span>
-                  </n-button>
-                  <n-button block quaternary size="small" @click="handleLoadKernel">
-                    <template #icon>
-                      <n-icon :component="DownloadOutline"/>
-                    </template>
-                    <span v-if="!collapsed">{{ t('sidebar.load_kernel') }}</span>
-                  </n-button>
-                  <n-button block quaternary size="small" @click="showKernelSettingsModal">
-                    <template #icon>
-                      <n-icon :component="CogOutline"/>
-                    </template>
-                    <span v-if="!collapsed">{{ t('kernel_settings.title') }}</span>
-                  </n-button>
-                  <n-button block quaternary size="small" @click="handlePatchVDF">
-                    <template #icon>
-                      <n-icon :component="BuildOutline"/>
-                    </template>
-                    <span v-if="!collapsed">{{ t('sidebar.patch_vdf') }}</span>
-                  </n-button>
-                  <n-button block quaternary size="small" @click="handleRestartSteam">
-                    <template #icon>
-                      <n-icon :component="RefreshOutline"/>
-                    </template>
-                    <span v-if="!collapsed">{{ t('sidebar.restart_steam') }}</span>
+                    <span v-if="!collapsed">{{ t('sidebar.task_log') }}</span>
                   </n-button>
                   <n-button block quaternary size="small" @click="toggleTheme">
                     <template #icon>
@@ -101,47 +77,29 @@
             </n-layout>
           </n-layout>
         </template>
-        <!-- Announcement Modal -->
-        <n-modal v-model:show="annModalVisible" :bordered="false" :segmented="{ content: true }" :title="t('announcement.title')"
-                 preset="card" style="max-width: 600px;">
-          <div v-if="annList.length === 0" style="text-align: center; padding: 24px;">
-            <n-text depth="3">{{ t('announcement.empty') }}</n-text>
-          </div>
-          <n-space v-else :size="16" vertical>
-            <n-card v-for="ann in annList" :key="ann.id" :bordered="true" size="small">
-              <template #header>
-                <n-space :size="8" align="center">
-                  <span>{{ ann.title }}</span>
-                  <n-tag :bordered="false" size="tiny">{{ ann.author }}</n-tag>
-                </n-space>
-              </template>
-              <template #header-extra>
-                <n-text depth="3" style="font-size: 12px;">{{ formatDate(ann.createdAt) }}</n-text>
-              </template>
-              <div class="md-content" v-html="renderMarkdown(ann.content)"></div>
-            </n-card>
-          </n-space>
-        </n-modal>
-        <!-- Kernel Settings Modal -->
-        <n-modal v-model:show="kernelSettingsVisible" :bordered="false" :title="t('kernel_settings.title')"
-                 preset="card" style="max-width: 420px;">
-          <n-spin :show="kernelSettingsLoading">
-            <n-space :size="16" vertical>
-              <n-space align="center" justify="space-between">
-                <n-text>{{ t('kernel_settings.activate_unlock_mode') }}</n-text>
-                <n-switch v-model:value="kernelSettings.activate_unlock_mode" @update:value="saveKernelSettings"/>
-              </n-space>
-              <n-space align="center" justify="space-between">
-                <n-text>{{ t('kernel_settings.always_stay_unlocked') }}</n-text>
-                <n-switch v-model:value="kernelSettings.always_stay_unlocked" @update:value="saveKernelSettings"/>
-              </n-space>
-              <n-space align="center" justify="space-between">
-                <n-text>{{ t('kernel_settings.not_unlock_depot') }}</n-text>
-                <n-switch v-model:value="kernelSettings.not_unlock_depot" @update:value="saveKernelSettings"/>
-              </n-space>
+        <!-- Task Log Drawer -->
+        <n-drawer v-model:show="showLogDrawer" :width="460" placement="right">
+          <n-drawer-content :title="t('sidebar.task_log')" closable>
+            <n-space :size="8" align="center" style="margin-bottom: 12px;">
+              <n-tag v-if="store.taskStatus === 'running'" type="info" size="small" round>{{ t('home.task_running') }}</n-tag>
+              <n-tag v-else-if="store.taskStatus === 'completed'" type="success" size="small" round>{{ t('sidebar.log_completed') }}</n-tag>
+              <n-tag v-else-if="store.taskStatus === 'error'" type="error" size="small" round>{{ t('sidebar.log_error') }}</n-tag>
+              <n-tag v-else type="default" size="small" round>{{ t('sidebar.log_idle') }}</n-tag>
+              <n-button size="tiny" quaternary @click="store.clearLogs()">{{ t('sidebar.log_clear') }}</n-button>
             </n-space>
-          </n-spin>
-        </n-modal>
+            <n-timeline>
+              <n-timeline-item
+                  v-for="(log, i) in store.logs"
+                  :key="i"
+                  :time="log.timestamp"
+                  :type="log.type === 'error' ? 'error' : log.type === 'warning' ? 'warning' : 'info'"
+              >
+                <span :style="{color: log.type === 'error' ? '#d03050' : log.type === 'warning' ? '#f0a020' : 'inherit'}">{{ log.message }}</span>
+              </n-timeline-item>
+            </n-timeline>
+            <n-empty v-if="store.logs.length === 0" :description="t('home.log_placeholder')"/>
+          </n-drawer-content>
+        </n-drawer>
       </n-dialog-provider>
     </n-message-provider>
   </n-config-provider>
@@ -152,31 +110,19 @@ import {computed, h, onMounted, ref} from 'vue'
 import {useRoute, useRouter} from 'vue-router'
 import {createDiscreteApi, darkTheme, type GlobalThemeOverrides, type MenuOption, NIcon} from 'naive-ui'
 import {
-  BuildOutline,
-  CogOutline,
-  DownloadOutline,
   GameControllerOutline,
   HomeOutline,
-  MegaphoneOutline,
-  MoonOutline,
-  RefreshOutline,
   SettingsOutline,
   SunnyOutline,
+  MoonOutline,
+  DocumentTextOutline,
 } from '@vicons/ionicons5'
 import {useI18n} from './i18n'
 import {useAppStore} from './stores/app'
 import {
-  CheckUpdate,
-  GetAnnouncements,
   GetDetailedConfig,
-  GetKernelSettings,
-  LoadKernel,
-  PatchVDF,
-  RestartSteam,
-  SetKernelSettings
 } from '../wailsjs/go/main/App'
-import {BrowserOpenURL, EventsOn, Quit, WindowMinimise, WindowToggleMaximise} from '../wailsjs/runtime/runtime'
-import {marked} from 'marked'
+import {EventsOn, Quit, WindowMinimise, WindowToggleMaximise} from '../wailsjs/runtime/runtime'
 
 const {t} = useI18n()
 const route = useRoute()
@@ -215,6 +161,7 @@ function toggleTheme() {
 
 // Sidebar collapse
 const collapsed = ref(false)
+const showLogDrawer = ref(false)
 
 // Menu
 function renderIcon(icon: any) {
@@ -238,139 +185,6 @@ function handleMenuSelect(key: string) {
 }
 
 // Sidebar actions
-const kernelLoading = ref(false)
-
-function handleLoadKernel() {
-  dialog.warning({
-    title: t('kernel.confirm_title'),
-    content: t('kernel.confirm_content'),
-    positiveText: t('common.confirm'),
-    negativeText: t('common.cancel'),
-    onPositiveClick: async () => {
-      kernelLoading.value = true
-      try {
-        const result = await LoadKernel()
-        if (result.success) {
-          message.success(result.message)
-        } else {
-          message.error(result.message)
-        }
-      } catch (e: any) {
-        message.error(e.message || t('kernel.failed'))
-      } finally {
-        kernelLoading.value = false
-      }
-    },
-  })
-}
-
-function handlePatchVDF() {
-  dialog.warning({
-    title: t('patch.confirm_title'),
-    content: t('patch.confirm_content'),
-    positiveText: t('common.confirm'),
-    negativeText: t('common.cancel'),
-    onPositiveClick: async () => {
-      try {
-        const result = await PatchVDF()
-        if (result.success) {
-          message.success(result.message)
-        } else {
-          message.error(result.message)
-        }
-      } catch (e: any) {
-        message.error(e.message || t('patch.failed'))
-      }
-    },
-  })
-}
-
-function handleRestartSteam() {
-  dialog.warning({
-    title: t('sidebar.restart_confirm_title'),
-    content: t('sidebar.restart_confirm'),
-    positiveText: t('common.confirm'),
-    negativeText: t('common.cancel'),
-    onPositiveClick: async () => {
-      try {
-        const result = await RestartSteam()
-        if (result.success) {
-          message.success(result.message)
-        } else {
-          message.error(result.message)
-        }
-      } catch (e: any) {
-        message.error(e.message || 'Failed')
-      }
-    },
-  })
-}
-
-// --- Announcements ---
-const annModalVisible = ref(false)
-const annList = ref<any[]>([])
-
-function renderMarkdown(content: string): string {
-  return marked.parse(content, {async: false}) as string
-}
-
-function formatDate(iso: string): string {
-  if (!iso) return ''
-  const d = new Date(iso)
-  return d.toLocaleDateString()
-}
-
-async function fetchAnnouncements() {
-  try {
-    const resp = await GetAnnouncements()
-    if (resp.success && resp.announcements) {
-      annList.value = resp.announcements
-    }
-  } catch (e) {
-  }
-}
-
-function showAnnouncementModal() {
-  fetchAnnouncements()
-  annModalVisible.value = true
-}
-
-// --- Kernel Settings ---
-const kernelSettingsVisible = ref(false)
-const kernelSettingsLoading = ref(false)
-const kernelSettings = ref({
-  activate_unlock_mode: false,
-  always_stay_unlocked: false,
-  not_unlock_depot: false,
-})
-
-async function showKernelSettingsModal() {
-  kernelSettingsVisible.value = true
-  kernelSettingsLoading.value = true
-  try {
-    const resp = await GetKernelSettings()
-    if (resp.success) {
-      kernelSettings.value = resp.settings
-    } else {
-      message.error(resp.message || t('kernel_settings.load_failed'))
-    }
-  } catch (e) {
-    message.error(t('kernel_settings.load_failed'))
-  } finally {
-    kernelSettingsLoading.value = false
-  }
-}
-
-async function saveKernelSettings() {
-  try {
-    const resp = await SetKernelSettings(kernelSettings.value)
-    if (!resp.success) {
-      message.error(resp.message)
-    }
-  } catch (e: any) {
-    message.error(e.message || 'Error')
-  }
-}
 
 onMounted(async () => {
   // OOBE check: redirect to setup if no key configured
@@ -401,43 +215,6 @@ onMounted(async () => {
     }
     store.setTaskStatus('idle')
   })
-
-  await fetchAnnouncements()
-  if (annList.value.length > 0) {
-    // Find the latest announcement (highest id)
-    const latest = annList.value.reduce((a, b) => (a.id > b.id ? a : b))
-    const lastSeenId = localStorage.getItem('lastSeenAnnouncementId')
-    if (String(latest.id) !== lastSeenId) {
-      // Only show the latest new one
-      annList.value = [latest]
-      annModalVisible.value = true
-      localStorage.setItem('lastSeenAnnouncementId', String(latest.id))
-    }
-  }
-
-  // Auto check for updates on startup
-  try {
-    const info = await CheckUpdate()
-    if (info && info.has_update) {
-      dialog.info({
-        title: t('update.title'),
-        content: () =>
-            h('div', {}, [
-              h('p', {}, `${t('update.current')}: v${info.current_version}`),
-              h('p', {}, `${t('update.latest')}: v${info.latest_version}`),
-              info.changelog ? h('p', {}, `${t('update.changelog')}: ${info.changelog}`) : null,
-            ]),
-        positiveText: info.download_url ? t('update.download') : undefined,
-        negativeText: t('common.cancel'),
-        onPositiveClick: () => {
-          if (info.download_url) {
-            BrowserOpenURL(info.download_url)
-          }
-        },
-      })
-    }
-  } catch (e) {
-  }
 })
 </script>
 

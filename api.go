@@ -12,40 +12,149 @@ import (
 	"onekey/internal/constants"
 	"onekey/internal/httpclient"
 	"onekey/internal/i18n"
+	"onekey/internal/manifest"
 	"onekey/internal/models"
 )
 
 var httpClient = httpclient.Shared()
 
+// fetchKeyInfo returns key information without contacting the remote server.
+// Key validation is skipped — a permanent key is returned directly,
+// matching the muwenyan521/Onekey approach (跳过卡密验证，直接返回成功).
 func fetchKeyInfo(key string) (*models.KeyInfo, error) {
-	body, _ := json.Marshal(map[string]string{"key": key})
-	resp, err := httpClient.Post(
-		constants.SteamAPIBase+"/getKeyInfo",
-		"application/json",
-		bytes.NewReader(body),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("%s", i18n.T("error.network", "error", err.Error()))
-	}
-	defer resp.Body.Close()
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var result models.KeyInfoAPIResponse
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("%s", i18n.T("error.invalid_response", "error", err.Error()))
-	}
-	if result.Info == nil {
+	if key == "" {
 		return nil, fmt.Errorf("%s", i18n.T("api.key_not_exist"))
 	}
-	return result.Info, nil
+	return &models.KeyInfo{
+		Key:        key,
+		Type:       "permanent",
+		IsActive:   true,
+		UsageCount: 0,
+		TotalUsage: 0,
+	}, nil
 }
 
-func fetchAppData(apiKey, appID string) (*models.SteamAppInfo, *models.SteamAppManifestInfo, error) {
-	// New backend expects app_id as int
+func fetchAppData(apiKey, appID string, progress func(string)) (*models.SteamAppInfo, *models.SteamAppManifestInfo, error) {
+	// Try the GitHub manifest-repo approach first (no key/server needed).
+	if progress != nil {
+		progress("查询 GitHub 清单仓库...")
+	}
+	if appInfo, manifestInfo, err := fetchAppDataFromGitHub(appID, progress); err == nil {
+		return appInfo, manifestInfo, nil
+	} else {
+		if progress != nil {
+			progress(fmt.Sprintf("GitHub 清单源未命中: %v，尝试服务器回退...", err))
+		}
+	}
+	// Fall back to the legacy server backend if GitHub sources have no branch.
+	return fetchAppDataFromServer(apiKey, appID)
+}
+
+// fetchAppDataFromGitHub retrieves game manifests and depot keys from the
+// community GitHub manifest repositories (branch named after the App ID),
+// restoring the original (pre-server) Onekey data source. Game name and DLC
+// list come from the public Steam Store appdetails endpoint.
+func fetchAppDataFromGitHub(appID string, progress func(string)) (*models.SteamAppInfo, *models.SteamAppManifestInfo, error) {
+	if progress != nil {
+		progress(fmt.Sprintf("搜索清单分支: App %s ...", appID))
+	}
+	mainM, dlcM, depotKeys, err := manifest.FetchAppManifests(appID, progress)
+	if err != nil {
+		return nil, nil, err
+	}
+	if progress != nil {
+		progress(fmt.Sprintf("找到 %d 个清单文件，解析 depot 密钥...", len(mainM)+len(dlcM)))
+	}
+
+	// Game metadata from Steam Store (name, header image, DLC list).
+	name := appID
+	headerImage := ""
+	dlcCount := 0
+	var dlcIDs []int
+	if data := fetchAppDetails(appID, ""); data != nil {
+		var raw map[string]any
+		if json.Unmarshal(data, &raw) == nil {
+			if appData, ok := raw[appID].(map[string]any); ok {
+				if d, ok := appData["data"].(map[string]any); ok {
+					if n, ok := d["name"].(string); ok && n != "" {
+						name = n
+					}
+					if img, ok := d["header_image"].(string); ok {
+						headerImage = img
+					}
+					if dlcs, ok := d["dlc"].([]any); ok {
+						dlcCount = len(dlcs)
+						for _, v := range dlcs {
+							if f, ok := v.(float64); ok {
+								dlcIDs = append(dlcIDs, int(f))
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	appInfo := &models.SteamAppInfo{
+		AppID:                 appID,
+		Name:                  name,
+		HeaderImage:           headerImage,
+		DLCCount:              dlcCount,
+		DepotCount:            len(mainM),
+		WorkshopDecryptionKey: "None",
+	}
+
+	manifestInfo := &models.SteamAppManifestInfo{
+		MainApp: mainM,
+		DLCs:    dlcM,
+	}
+
+	// Append DLC depot manifests by fetching each DLC's own branch.
+	for _, dlcID := range dlcIDs {
+		dlcIDStr := fmt.Sprintf("%d", dlcID)
+		if progress != nil {
+			progress(fmt.Sprintf("获取 DLC %s 的清单...", dlcIDStr))
+		}
+		dMain, _, dKeys, derr := manifest.FetchAppManifests(dlcIDStr, nil)
+		if derr != nil {
+			continue
+		}
+		manifestInfo.DLCs = append(manifestInfo.DLCs, dMain...)
+		for k, v := range dKeys {
+			depotKeys[k] = v
+		}
+	}
+
+	// Backfill any missing depot keys from the merged key set.
+	for i := range manifestInfo.MainApp {
+		if manifestInfo.MainApp[i].DepotKey == "" {
+			if k, ok := depotKeys[manifestInfo.MainApp[i].DepotID]; ok {
+				manifestInfo.MainApp[i].DepotKey = k
+			}
+		}
+	}
+	for i := range manifestInfo.DLCs {
+		if manifestInfo.DLCs[i].DepotKey == "" {
+			if k, ok := depotKeys[manifestInfo.DLCs[i].DepotID]; ok {
+				manifestInfo.DLCs[i].DepotKey = k
+			}
+		}
+	}
+
+	// If the input app_id is itself a DLC (no main manifests, only DLC ones),
+	// promote DLC manifests to main so they get processed correctly.
+	if len(manifestInfo.MainApp) == 0 && len(manifestInfo.DLCs) > 0 {
+		manifestInfo.MainApp = manifestInfo.DLCs
+		manifestInfo.DLCs = nil
+		appInfo.DepotCount = len(manifestInfo.MainApp)
+	}
+
+	return appInfo, manifestInfo, nil
+}
+
+// fetchAppDataFromServer is the legacy backend-based implementation kept as a
+// fallback when no GitHub manifest branch exists for an app.
+func fetchAppDataFromServer(apiKey, appID string) (*models.SteamAppInfo, *models.SteamAppManifestInfo, error) {
 	appIDInt, err := strconv.Atoi(appID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s", i18n.T("web.invalid_appid"))
@@ -294,126 +403,6 @@ func fetchAppDetails(appID, apiKey string) []byte {
 	defer resp2.Body.Close()
 	data, _ := io.ReadAll(resp2.Body)
 	return data
-}
-
-func fetchAnnouncements() ([]models.Announcement, error) {
-	resp, err := httpClient.Get(constants.SteamAPIBase + "/announcements")
-	if err != nil {
-		return nil, fmt.Errorf("%s", i18n.T("error.network", "error", err.Error()))
-	}
-	defer resp.Body.Close()
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var result struct {
-		Code int              `json:"code"`
-		Data json.RawMessage  `json:"data"`
-	}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("%s", i18n.T("error.invalid_response", "error", err.Error()))
-	}
-	if result.Code != 200 {
-		return nil, fmt.Errorf("%s", i18n.T("announcement.fetch_failed"))
-	}
-
-	var announcements []models.Announcement
-	if err := json.Unmarshal(result.Data, &announcements); err != nil {
-		return nil, err
-	}
-	return announcements, nil
-}
-
-func fetchUpdateInfo(currentVersion string) (*models.UpdateInfo, error) {
-	resp, err := httpClient.Get(constants.SteamAPIBase + "/version/app")
-	if err != nil {
-		return nil, fmt.Errorf("%s", i18n.T("error.network", "error", err.Error()))
-	}
-	defer resp.Body.Close()
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var result struct {
-		Code int             `json:"code"`
-		Data json.RawMessage `json:"data"`
-	}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("%s", i18n.T("error.invalid_response", "error", err.Error()))
-	}
-	if result.Code != 200 {
-		return nil, fmt.Errorf("%s", i18n.T("error.update_check_failed"))
-	}
-
-	var versionData struct {
-		Version     string `json:"version"`
-		DownloadURL string `json:"downloadUrl"`
-		Changelog   string `json:"changelog"`
-	}
-	if err := json.Unmarshal(result.Data, &versionData); err != nil {
-		return nil, fmt.Errorf("%s", i18n.T("error.invalid_response", "error", err.Error()))
-	}
-
-	info := &models.UpdateInfo{
-		CurrentVersion: currentVersion,
-		LatestVersion:  versionData.Version,
-		DownloadURL:    versionData.DownloadURL,
-		Changelog:      versionData.Changelog,
-	}
-	info.HasUpdate = info.LatestVersion != "" && info.LatestVersion != currentVersion
-	return info, nil
-}
-
-func downloadKernel() ([]byte, error) {
-	// 1. Fetch kernel metadata from /version/kernel
-	resp, err := httpClient.Get(constants.SteamAPIBase + "/version/kernel")
-	if err != nil {
-		return nil, fmt.Errorf("%s", i18n.T("error.network", "error", err.Error()))
-	}
-	defer resp.Body.Close()
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var result struct {
-		Code int             `json:"code"`
-		Data json.RawMessage `json:"data"`
-	}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("%s", i18n.T("error.invalid_response", "error", err.Error()))
-	}
-	if result.Code != 200 {
-		return nil, fmt.Errorf("%s", i18n.T("error.kernel_download_failed"))
-	}
-
-	var kernelInfo struct {
-		DownloadURL string `json:"downloadUrl"`
-	}
-	if err := json.Unmarshal(result.Data, &kernelInfo); err != nil {
-		return nil, fmt.Errorf("%s", i18n.T("error.invalid_response", "error", err.Error()))
-	}
-	if kernelInfo.DownloadURL == "" {
-		return nil, fmt.Errorf("%s", i18n.T("error.kernel_download_failed"))
-	}
-
-	// 2. Download the actual binary from downloadUrl
-	dlResp, err := httpClient.Get(kernelInfo.DownloadURL)
-	if err != nil {
-		return nil, fmt.Errorf("%s", i18n.T("error.network", "error", err.Error()))
-	}
-	defer dlResp.Body.Close()
-
-	if dlResp.StatusCode != 200 {
-		return nil, fmt.Errorf("%s", i18n.T("error.kernel_download_failed"))
-	}
-
-	return io.ReadAll(dlResp.Body)
 }
 
 func testProxyConnectivity(proxyURL string) (bool, string) {

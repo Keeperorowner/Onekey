@@ -4,14 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
-	"golang.org/x/sys/windows/registry"
 
 	"onekey/internal/config"
 	"onekey/internal/httpclient"
@@ -19,11 +17,8 @@ import (
 	"onekey/internal/library"
 	"onekey/internal/manifest"
 	"onekey/internal/models"
-	"onekey/internal/patcher"
 	"onekey/internal/steamtools"
 )
-
-const AppVersion = "3.0.1"
 
 type App struct {
 	ctx        context.Context
@@ -49,6 +44,7 @@ func (a *App) startup(ctx context.Context) {
 	if a.config.AppConfig.ProxyURL != "" {
 		httpclient.Shared().SetProxy(a.config.AppConfig.ProxyURL)
 	}
+	manifest.SetGitHubToken(a.config.AppConfig.GitHubToken)
 	a.initLogFile()
 	go a.config.InitCDNWithLatencyTest()
 }
@@ -123,6 +119,7 @@ func (a *App) GetDetailedConfig() models.DetailedConfigResponse {
 			Key:             a.config.AppConfig.Key,
 			Language:        a.config.AppConfig.Language,
 			ProxyURL:        a.config.AppConfig.ProxyURL,
+			GitHubToken:     a.config.AppConfig.GitHubToken,
 		},
 	}
 }
@@ -135,6 +132,7 @@ func (a *App) UpdateConfig(req models.UpdateConfigRequest) models.SimpleResponse
 	}
 	i18n.SetLanguage(a.config.AppConfig.Language)
 	httpclient.Shared().SetProxy(a.config.AppConfig.ProxyURL)
+	manifest.SetGitHubToken(a.config.AppConfig.GitHubToken)
 	return models.SimpleResponse{Success: true, Message: i18n.T("web.config_saved")}
 }
 
@@ -152,7 +150,8 @@ func (a *App) ResetConfig() models.SimpleResponse {
 	return models.SimpleResponse{Success: true, Message: i18n.T("web.config_reset")}
 }
 
-// VerifyKey checks an API key against the remote server.
+// VerifyKey returns key information without contacting the remote server.
+// Key validation is skipped — a permanent key is always returned.
 func (a *App) VerifyKey(key string) models.KeyInfoAPIResponse {
 	key = strings.TrimSpace(key)
 	if key == "" {
@@ -248,7 +247,9 @@ func (a *App) runUnlockTask(appID string) {
 
 	// 2. Fetch game data from API
 	emit("info", i18n.T("api.fetching_game", "app_id", appID))
-	appInfo, manifestInfo, err := fetchAppData(apiKey, appID)
+	appInfo, manifestInfo, err := fetchAppData(apiKey, appID, func(msg string) {
+		emit("info", msg)
+	})
 	if err != nil {
 		emit("error", err.Error())
 		a.setTaskError(err.Error())
@@ -429,132 +430,4 @@ func (a *App) RemoveFromLibrary(appID int) models.SimpleResponse {
 		return models.SimpleResponse{Success: false, Message: err.Error()}
 	}
 	return models.SimpleResponse{Success: true, Message: i18n.T("library.removed")}
-}
-
-// GetAnnouncements fetches announcements from the server.
-func (a *App) GetAnnouncements() models.AnnouncementResponse {
-	list, err := fetchAnnouncements()
-	if err != nil {
-		return models.AnnouncementResponse{Success: false}
-	}
-	return models.AnnouncementResponse{Success: true, Announcements: list}
-}
-
-// CheckUpdate checks for a new version from the server.
-func (a *App) CheckUpdate() *models.UpdateInfo {
-	info, err := fetchUpdateInfo(AppVersion)
-	if err != nil {
-		return &models.UpdateInfo{
-			HasUpdate:      false,
-			CurrentVersion: AppVersion,
-		}
-	}
-	return info
-}
-
-// LoadKernel downloads the kernel file and saves it as xinput1_4.dll in the Steam root directory.
-func (a *App) LoadKernel() models.SimpleResponse {
-	if a.config.SteamPath == "" {
-		return models.SimpleResponse{Success: false, Message: i18n.T("kernel.no_steam_path")}
-	}
-
-	data, err := downloadKernel()
-	if err != nil {
-		return models.SimpleResponse{Success: false, Message: i18n.T("kernel.download_failed", "error", err.Error())}
-	}
-
-	dstPath := filepath.Join(a.config.SteamPath, "xinput1_4.dll")
-	if err := os.WriteFile(dstPath, data, 0644); err != nil {
-		return models.SimpleResponse{Success: false, Message: i18n.T("kernel.save_failed", "error", err.Error())}
-	}
-
-	return models.SimpleResponse{Success: true, Message: i18n.T("kernel.download_success")}
-}
-
-// PatchVDF patches Steam's packageinfo.vdf to modify billingtype entries.
-func (a *App) PatchVDF() models.SimpleResponse {
-	if a.config.SteamPath == "" {
-		return models.SimpleResponse{Success: false, Message: i18n.T("kernel.no_steam_path")}
-	}
-
-	count, err := patcher.PatchPackageInfo(a.config.SteamPath)
-	if err != nil {
-		return models.SimpleResponse{Success: false, Message: i18n.T("patch.failed", "error", err.Error())}
-	}
-	if count == 0 {
-		return models.SimpleResponse{Success: true, Message: i18n.T("patch.no_match")}
-	}
-	return models.SimpleResponse{Success: true, Message: i18n.T("patch.success", "count", fmt.Sprintf("%d", count))}
-}
-
-// RestartSteam kills the Steam process and relaunches it.
-func (a *App) RestartSteam() models.SimpleResponse {
-	killCmd := exec.Command("taskkill", "/F", "/IM", "steam.exe")
-	_ = killCmd.Run()
-
-	steamPath := a.config.SteamPath
-	if steamPath == "" {
-		return models.SimpleResponse{Success: false, Message: i18n.T("task.no_steam_path")}
-	}
-	steamExe := filepath.Join(steamPath, "steam.exe")
-	if !config.PathExists(steamExe) {
-		return models.SimpleResponse{Success: false, Message: i18n.T("steam.exe_not_found")}
-	}
-	cmd := exec.Command(steamExe)
-	cmd.Dir = steamPath
-	if err := cmd.Start(); err != nil {
-		return models.SimpleResponse{Success: false, Message: i18n.T("steam.restart_failed", "error", err.Error())}
-	}
-	return models.SimpleResponse{Success: true, Message: i18n.T("steam.restart_success")}
-}
-
-const steamtoolsRegPath = `Software\Valve\Steamtools`
-
-// GetKernelSettings reads SteamTools settings from the registry.
-func (a *App) GetKernelSettings() models.KernelSettingsResponse {
-	k, err := registry.OpenKey(registry.CURRENT_USER, steamtoolsRegPath, registry.QUERY_VALUE)
-	if err != nil {
-		// Key doesn't exist yet — return defaults (all false)
-		return models.KernelSettingsResponse{Success: true, Settings: models.KernelSettings{}}
-	}
-	defer k.Close()
-
-	readBool := func(name string) bool {
-		v, _, err := k.GetStringValue(name)
-		if err != nil {
-			return false
-		}
-		return v == "1" || strings.EqualFold(v, "true")
-	}
-
-	return models.KernelSettingsResponse{
-		Success: true,
-		Settings: models.KernelSettings{
-			ActivateUnlockMode: readBool("ActivateUnlockMode"),
-			AlwaysStayUnlocked: readBool("AlwaysStayUnlocked"),
-			NotUnlockDepot:     readBool("notUnlockDepot"),
-		},
-	}
-}
-
-// SetKernelSettings writes SteamTools settings to the registry.
-func (a *App) SetKernelSettings(settings models.KernelSettings) models.SimpleResponse {
-	k, _, err := registry.CreateKey(registry.CURRENT_USER, steamtoolsRegPath, registry.SET_VALUE)
-	if err != nil {
-		return models.SimpleResponse{Success: false, Message: err.Error()}
-	}
-	defer k.Close()
-
-	boolStr := func(b bool) string {
-		if b {
-			return "1"
-		}
-		return "0"
-	}
-
-	k.SetStringValue("ActivateUnlockMode", boolStr(settings.ActivateUnlockMode))
-	k.SetStringValue("AlwaysStayUnlocked", boolStr(settings.AlwaysStayUnlocked))
-	k.SetStringValue("notUnlockDepot", boolStr(settings.NotUnlockDepot))
-
-	return models.SimpleResponse{Success: true, Message: i18n.T("kernel_settings.saved")}
 }
